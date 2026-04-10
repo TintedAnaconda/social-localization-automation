@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Env files
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Runtime data
+n8n_data/
+output/
+logs/
+
+# Temporary files
+*.tmp
+*.bak
