@@ -1,21 +1,30 @@
 # Python
-.venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Env files
-.env
+# Virtual environments
+.venv/
+venv/
+env/
 
-# OS / editor
+# Logs
+logs/
+*.log
+
+# Generated outputs
+output/
+output/qa_reports/
+
+# Inputs
+input/
+input/*.xlsx
+~$*.xlsx
+
+# OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
 
-# Runtime data
-n8n_data/
-output/
-logs/
-
-# Temporary files
-*.tmp
-*.bak
+Graveyard/

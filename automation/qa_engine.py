@@ -1,389 +1,260 @@
 from __future__ import annotations
 
-import os
-from typing import Any
+import logging
+from pathlib import Path
+from typing import Optional
 
 import pandas as pd
+from openpyxl.utils import get_column_letter
+
+from qa_language_checks import build_language_tool, validate_language_quality
+from qa_models import Issue
+from qa_required_columns import validate_required_headers, validate_required_values
+from qa_utils import (
+    add_source_row_number,
+    clean_object_columns,
+    filter_rows_with_message_name,
+)
+from qa_validators import (
+    validate_autofill_logic,
+    validate_channel_rules,
+    validate_concatenate_rule,
+    validate_fixed_values,
+    validate_hashtag_rules,
+    validate_media_rules,
+    validate_message_rules,
+    validate_x_character_limit,
+)
 
 
-def normalize_channel(value: Any) -> Any:
-    if pd.isna(value):
-        return value
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_DIR = REPO_ROOT / "config"
+INPUT_DIR = REPO_ROOT / "input"
+OUTPUT_DIR = REPO_ROOT / "output" / "qa_reports"
+LOGS_DIR = REPO_ROOT / "logs"
 
-    channel_normalization = {
-        "twitter": "X",
-        "x": "X",
-        "x/twitter": "X",
-    }
+GLOBAL_AUTOFILL_PATH = CONFIG_DIR / "Global Autofill Rule.xlsx"
 
-    v = str(value).strip().lower()
-    return channel_normalization.get(v, str(value).strip())
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+LOG_FILE = LOGS_DIR / "qa_engine.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 
-def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = (
-        df.columns
-        .str.replace("\ufeff", "", regex=False)
-        .str.replace("\xa0", " ", regex=False)
-        .str.replace("\n", " ", regex=False)
-        .str.replace("\r", " ", regex=False)
-        .str.strip()
+def choose_latest_input_file(input_dir: Path) -> Path:
+    excel_files = sorted(
+        [p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in {".xlsx", ".xls"}],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
+    if not excel_files:
+        raise FileNotFoundError(f"No Excel files found in {input_dir}")
+    return excel_files[0]
+
+
+def load_input_excel(path: Path) -> pd.DataFrame:
+    logger.info("Loading input file: %s", path)
+    df = pd.read_excel(path, dtype=object)
+    df = add_source_row_number(df)
     return df
 
 
-def validate_required_columns(df: pd.DataFrame, required_columns: list[str]) -> None:
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        raise ValueError(f"Missing required columns: {missing_columns}")
+def load_autofill_values_from_row1(path: Path) -> pd.DataFrame:
+    logger.info("Loading Global Autofill source (row 1 values from all sheets, skipping column A): %s", path)
 
+    dfs: list[pd.DataFrame] = []
+    xl = pd.ExcelFile(path)
 
-def clean_hashtags(text: Any) -> str:
-    if pd.isna(text):
-        return ""
-    return str(text).replace("#", " ").strip()
+    for sheet in xl.sheet_names:
+        raw_df = pd.read_excel(path, sheet_name=sheet, header=None, dtype=object)
 
+        if raw_df.empty:
+            continue
 
-def add_issue(
-    qa_issues: list[dict[str, Any]],
-    row_index: int,
-    message_name: str,
-    channel: str,
-    field: str,
-    severity: str,
-    issue: str,
-    description: str,
-) -> None:
-    qa_issues.append({
-        "Row": row_index + 2,
-        "Message Name": message_name,
-        "Channel": channel,
-        "Field": field,
-        "Severity": severity,
-        "Issue": issue,
-        "Description": description,
-    })
+        # Row 1 in Excel = iloc[0]
+        row1_values = raw_df.iloc[0].tolist()
 
+        # Ignore column A (index 0). Keep B onward only.
+        candidate_values = row1_values[1:]
 
-def check_duplicate_message_channel(df: pd.DataFrame, qa_issues: list[dict[str, Any]]) -> None:
-    duplicate_check_df = df.copy()
-    duplicate_check_df["Message Name"] = duplicate_check_df["Message Name"].fillna("").astype(str).str.strip()
-    duplicate_check_df["Channel"] = duplicate_check_df["Channel"].fillna("").astype(str).str.strip()
+        cleaned_values = [
+            str(v).replace("\u00A0", " ").strip()
+            for v in candidate_values
+            if pd.notna(v) and str(v).strip()
+        ]
 
-    duplicate_check_df = duplicate_check_df[
-        (duplicate_check_df["Message Name"] != "") &
-        (duplicate_check_df["Channel"] != "")
-    ]
+        if not cleaned_values:
+            logger.info("Skipping sheet (no Autofill values found in row 1 after column A): %s", sheet)
+            continue
 
-    duplicate_rows = duplicate_check_df[
-        duplicate_check_df.duplicated(subset=["Message Name", "Channel"], keep=False)
-    ]
+        logger.info("Sheet '%s' loaded %s Autofill value(s) from row 1", sheet, len(cleaned_values))
 
-    for idx, row in duplicate_rows.iterrows():
-        add_issue(
-            qa_issues=qa_issues,
-            row_index=idx,
-            message_name=row["Message Name"],
-            channel=row["Channel"],
-            field="Message Name + Channel",
-            severity="BLOCKER",
-            issue="Duplicate combination",
-            description="Message Name + Channel must be unique.",
+        sheet_df = pd.DataFrame({
+            "Global Autofill Value": cleaned_values,
+            "__source_sheet": sheet,
+        })
+        dfs.append(sheet_df)
+
+    if not dfs:
+        raise ValueError(
+            "No valid Autofill values found in row 1 (columns B onward) of Global Autofill Rule.xlsx"
         )
 
-
-def check_channel_values(df: pd.DataFrame, qa_issues: list[dict[str, Any]]) -> None:
-    valid_channels = ["LinkedIn", "X", "Instagram", "Facebook", "Threads"]
-
-    for idx, row in df.iterrows():
-        channel = "" if pd.isna(row["Channel"]) else str(row["Channel"]).strip()
-        message_name = "" if pd.isna(row["Message Name"]) else str(row["Message Name"]).strip()
-
-        if channel not in valid_channels:
-            add_issue(
-                qa_issues=qa_issues,
-                row_index=idx,
-                message_name=message_name,
-                channel=channel,
-                field="Channel",
-                severity="BLOCKER",
-                issue="Invalid channel",
-                description=f"Channel must be one of {valid_channels}",
-            )
+    combined_df = pd.concat(dfs, ignore_index=True)
+    logger.info("Loaded %s sheet(s) with %s total Autofill values", len(dfs), len(combined_df))
+    return combined_df
 
 
-def check_x_character_limit(df: pd.DataFrame, qa_issues: list[dict[str, Any]]) -> None:
-    for idx, row in df.iterrows():
-        channel = "" if pd.isna(row["Channel"]) else str(row["Channel"]).strip()
-        message_name = "" if pd.isna(row["Message Name"]) else str(row["Message Name"]).strip()
-        message = "" if pd.isna(row["Message"]) else str(row["Message"]).strip()
-        hashtags = "" if pd.isna(row["HASHTAGS"]) else str(row["HASHTAGS"]).strip()
-
-        if channel == "X":
-            combined_text = f"{message} {hashtags}".strip()
-            char_count = len(combined_text)
-
-            if char_count > 197:
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="Message + HASHTAGS",
-                    severity="BLOCKER",
-                    issue="Character limit exceeded",
-                    description=f"X posts must be ≤ 197 characters. Current length: {char_count}",
-                )
+def has_blocking_header_issues(issues: list[Issue]) -> bool:
+    return any(
+        issue.severity == "BLOCKER" and issue.rule in {"Missing Header", "Header Mismatch"}
+        for issue in issues
+    )
 
 
-def check_instagram_rules(df: pd.DataFrame, qa_issues: list[dict[str, Any]]) -> None:
-    instagram_cta_phrases = [
-        "link in bio",
-	"link in the bio",
-        "check the link in bio",
-        "tap the link in bio",
-        "see link in bio",
-        "see the link in bio",
-        "learn more at the link in bio",
-        "learn more via link in bio",
-    ]
+def build_summary_df(
+    input_rows: int,
+    qa_rows: int,
+    skipped_rows: int,
+    issues_df: pd.DataFrame,
+) -> pd.DataFrame:
+    blocker_count = int((issues_df["severity"] == "BLOCKER").sum()) if not issues_df.empty else 0
+    warning_count = int((issues_df["severity"] == "WARNING").sum()) if not issues_df.empty else 0
 
-    for idx, row in df.iterrows():
-        channel = "" if pd.isna(row["Channel"]) else str(row["Channel"]).strip()
-        message_name = "" if pd.isna(row["Message Name"]) else str(row["Message Name"]).strip()
-        message = "" if pd.isna(row["Message"]) else str(row["Message"]).strip()
-        message_lower = message.lower()
+    status = "FAIL" if blocker_count > 0 else "PASS WITH WARNINGS" if warning_count > 0 else "PASS"
 
-        if channel.lower() == "instagram":
-            if "http://" in message_lower or "https://" in message_lower or "www." in message_lower:
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="Message",
-                    severity="BLOCKER",
-                    issue="URL not allowed",
-                    description="Instagram social copy cannot include URLs.",
-                )
-
-            if not any(phrase in message_lower for phrase in instagram_cta_phrases):
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="Message",
-                    severity="WARNING",
-                    issue="Missing link in bio CTA",
-                    description="Instagram posts should include a CTA directing users to the link in bio.",
-                )
+    return pd.DataFrame([
+        {"Metric": "Input Rows", "Value": input_rows},
+        {"Metric": "QA Rows", "Value": qa_rows},
+        {"Metric": "Skipped Rows Without Message Name", "Value": skipped_rows},
+        {"Metric": "Total Issues", "Value": len(issues_df)},
+        {"Metric": "Blockers", "Value": blocker_count},
+        {"Metric": "Warnings", "Value": warning_count},
+        {"Metric": "Status", "Value": status},
+    ])
 
 
-def check_asset_rules(df: pd.DataFrame, qa_issues: list[dict[str, Any]]) -> None:
-    media_type_column = "Partner CF:Post Media Type"
-
-    image_media_types = {"image (illustration)", "image (photography)", "carousel"}
-    valid_image_extensions = {".png", ".jpg", ".jpeg"}
-    valid_video_extensions = {".mp4"}
-    valid_pdf_extensions = {".pdf"}
-
-    for idx, row in df.iterrows():
-        media_type = "" if pd.isna(row[media_type_column]) else str(row[media_type_column]).strip().lower()
-        image_name = "" if pd.isna(row["IMAGE-NAME"]) else str(row["IMAGE-NAME"]).strip()
-        alt_text = "" if pd.isna(row["Alt-Text"]) else str(row["Alt-Text"]).strip()
-        message_name = "" if pd.isna(row["Message Name"]) else str(row["Message Name"]).strip()
-        channel = "" if pd.isna(row["Channel"]) else str(row["Channel"]).strip()
-
-        _, extension = os.path.splitext(image_name)
-        extension = extension.lower().strip()
-
-        is_image = media_type in image_media_types
-        is_video = media_type.startswith("video")
-        is_linkedin_doc = media_type == "linkedin document ad"
-
-        if is_image and alt_text == "":
-            add_issue(
-                qa_issues=qa_issues,
-                row_index=idx,
-                message_name=message_name,
-                channel=channel,
-                field="Alt-Text",
-                severity="WARNING",
-                issue="Missing Alt Text",
-                description="Alt Text is required for Image (Illustration), Image (Photography), and Carousel.",
-            )
-
-        if is_image:
-            if image_name == "":
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Missing asset file name",
-                    description="IMAGE-NAME is required for image and carousel assets.",
-                )
-            elif extension == "":
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Missing file extension",
-                    description="Image and Carousel assets must include .png, .jpg, or .jpeg.",
-                )
-            elif extension not in valid_image_extensions:
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Invalid image file type",
-                    description="Image and Carousel assets must end with .png, .jpg, or .jpeg.",
-                )
-
-        if is_video:
-            if image_name == "":
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Missing asset file name",
-                    description="IMAGE-NAME is required for video assets.",
-                )
-            elif extension == "":
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Missing file extension",
-                    description="Video assets must include the .mp4 file extension.",
-                )
-            elif extension not in valid_video_extensions:
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Invalid video file type",
-                    description=f"Video assets ({row[media_type_column]}) must end with .mp4.",
-                )
-
-        if is_linkedin_doc:
-            if image_name == "":
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Missing asset file name",
-                    description="IMAGE-NAME is required for LinkedIn Document Ad assets.",
-                )
-            elif extension == "":
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Missing file extension",
-                    description="LinkedIn Document Ad assets must include the .pdf file extension.",
-                )
-            elif extension not in valid_pdf_extensions:
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field="IMAGE-NAME",
-                    severity="BLOCKER",
-                    issue="Invalid document file type",
-                    description="LinkedIn Document Ad assets must end with .pdf.",
-                )
+def autosize_worksheet(writer, sheet_name: str, df: pd.DataFrame) -> None:
+    ws = writer.sheets[sheet_name]
+    for idx, col in enumerate(df.columns, start=1):
+        values = df[col].astype(str).fillna("").tolist() if not df.empty else []
+        max_len = max([len(str(col))] + [len(v) for v in values])
+        ws.column_dimensions[get_column_letter(idx)].width = min(max_len + 2, 60)
 
 
-def check_url_format(df: pd.DataFrame, qa_issues: list[dict[str, Any]]) -> None:
-    for idx, row in df.iterrows():
-        url = "" if pd.isna(row["URL"]) else str(row["URL"]).strip()
-        message_name = "" if pd.isna(row["Message Name"]) else str(row["Message Name"]).strip()
-        channel = "" if pd.isna(row["Channel"]) else str(row["Channel"]).strip()
+def write_qa_report(
+    summary_df: pd.DataFrame,
+    issues_df: pd.DataFrame,
+    cleaned_input_df: pd.DataFrame,
+    input_file_path: Path,
+) -> Path:
+    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    output_file = OUTPUT_DIR / f"{input_file_path.stem}_qa_report_{timestamp}.xlsx"
 
-        if url != "" and not url.lower().startswith("https://"):
-            add_issue(
-                qa_issues=qa_issues,
-                row_index=idx,
-                message_name=message_name,
-                channel=channel,
-                field="URL",
-                severity="BLOCKER",
-                issue="Invalid URL format",
-                description="CTA URL must start with https://",
-            )
+    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        issues_df.to_excel(writer, sheet_name="Issues", index=False)
+        cleaned_input_df.to_excel(writer, sheet_name="Cleaned Input", index=False)
 
+        autosize_worksheet(writer, "Summary", summary_df)
+        autosize_worksheet(writer, "Issues", issues_df)
+        autosize_worksheet(writer, "Cleaned Input", cleaned_input_df)
 
-def check_grammar(
-    df: pd.DataFrame,
-    qa_issues: list[dict[str, Any]],
-    tool: Any,
-) -> None:
-    fields_to_check = ["Message", "HASHTAGS", "Alt-Text", "Image or video copy"]
-
-    for idx, row in df.iterrows():
-        message_name = "" if pd.isna(row["Message Name"]) else str(row["Message Name"]).strip()
-        channel = "" if pd.isna(row["Channel"]) else str(row["Channel"]).strip()
-
-        for field in fields_to_check:
-            text = row[field]
-
-            if field == "HASHTAGS":
-                text = clean_hashtags(text)
-
-            if pd.isna(text) or str(text).strip() == "":
-                continue
-
-            matches = tool.check(str(text))
-
-            for match in matches:
-                add_issue(
-                    qa_issues=qa_issues,
-                    row_index=idx,
-                    message_name=message_name,
-                    channel=channel,
-                    field=field,
-                    severity="WARNING",
-                    issue="Spelling/Grammar issue",
-                    description=match.message,
-                )
+    logger.info("QA report written: %s", output_file)
+    return output_file
 
 
-def run_all_qa(df: pd.DataFrame, tool: Any) -> pd.DataFrame:
-    qa_issues: list[dict[str, Any]] = []
+def run_qa(input_file: Optional[Path] = None) -> Path:
+    if input_file is None:
+        input_file = choose_latest_input_file(INPUT_DIR)
 
-    check_duplicate_message_channel(df, qa_issues)
-    check_channel_values(df, qa_issues)
-    check_x_character_limit(df, qa_issues)
-    check_instagram_rules(df, qa_issues)
-    check_asset_rules(df, qa_issues)
-    check_url_format(df, qa_issues)
-    check_grammar(df, qa_issues, tool)
+    if not input_file.exists():
+        raise FileNotFoundError(f"Input file not found: {input_file}")
 
-    return pd.DataFrame(qa_issues)
+    # Load input file
+    input_df = load_input_excel(input_file)
+    original_input_rows = len(input_df)
+
+    # Strict header validation on raw input file
+    header_issues = validate_required_headers(input_df)
+    if has_blocking_header_issues(header_issues):
+        issues_df = pd.DataFrame([issue.to_dict() for issue in header_issues])
+
+        summary_df = build_summary_df(
+            input_rows=original_input_rows,
+            qa_rows=0,
+            skipped_rows=original_input_rows,
+            issues_df=issues_df,
+        )
+
+        return write_qa_report(summary_df, issues_df, input_df, input_file)
+
+    # Load Autofill values from Global Autofill Rule workbook
+    autofill_df = load_autofill_values_from_row1(GLOBAL_AUTOFILL_PATH)
+
+    # Clean and scope rows for QA
+    working_df = clean_object_columns(input_df)
+    working_df = filter_rows_with_message_name(working_df)
+
+    qa_rows = len(working_df)
+    skipped_rows = original_input_rows - qa_rows
+
+    # Run validations
+    issues: list[Issue] = []
+    issues.extend(validate_required_values(working_df))
+    issues.extend(validate_fixed_values(working_df))
+    issues.extend(validate_channel_rules(working_df))
+    issues.extend(validate_message_rules(working_df))
+    issues.extend(validate_hashtag_rules(working_df))
+    issues.extend(validate_x_character_limit(working_df))
+    issues.extend(validate_concatenate_rule(working_df))
+    issues.extend(validate_media_rules(working_df))
+    issues.extend(validate_autofill_logic(working_df, autofill_df))
+
+    # Language checks
+    tool = build_language_tool()
+    issues.extend(validate_language_quality(working_df, tool))
+
+    # Build issues dataframe
+    issues_df = pd.DataFrame([issue.to_dict() for issue in issues])
+    if issues_df.empty:
+        issues_df = pd.DataFrame(columns=[
+            "row_number",
+            "column",
+            "severity",
+            "rule",
+            "message",
+            "actual_value",
+            "expected_value",
+        ])
+
+    # Build summary
+    summary_df = build_summary_df(
+        input_rows=original_input_rows,
+        qa_rows=qa_rows,
+        skipped_rows=skipped_rows,
+        issues_df=issues_df,
+    )
+
+    # Write report
+    report_path = write_qa_report(summary_df, issues_df, working_df, input_file)
+
+    blocker_count = int((issues_df["severity"] == "BLOCKER").sum()) if not issues_df.empty else 0
+    warning_count = int((issues_df["severity"] == "WARNING").sum()) if not issues_df.empty else 0
+    logger.info("QA complete | blockers=%s | warnings=%s", blocker_count, warning_count)
+
+    return report_path
+
+if __name__ == "__main__":
+    report = run_qa()
+    print(f"QA report created: {report}")
