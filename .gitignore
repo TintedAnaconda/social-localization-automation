@@ -19,12 +19,16 @@ output/qa_reports/
 
 # Inputs
 input/
-input/*.xlsx
 ~$*.xlsx
+
+# Environment files
+.env
+.env.*
 
 # OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
 
+# Misc
 Graveyard/

@@ -1,73 +1,56 @@
-# scripts/start.ps1
-# Starts local n8n in a separate PowerShell window and opens the browser.
-# Run from repo root:
-#   powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
+$ErrorActionPreference = "Stop"
 
-$ErrorActionPreference = 'Stop'
+Write-Host ""
+Write-Host "Starting QA Automation..." -ForegroundColor Cyan
 
-function Write-Step($message) {
-    Write-Host ""
-    Write-Host "=== $message ===" -ForegroundColor Cyan
+# Resolve repo root from the script location
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Split-Path -Parent $ScriptDir
+
+# Check that n8n is installed
+try {
+    $n8nVersion = & n8n --version
+    Write-Host "n8n detected: $n8nVersion" -ForegroundColor Green
+}
+catch {
+    Write-Host "ERROR: n8n is not installed or not on PATH." -ForegroundColor Red
+    Write-Host "Install it with: npm install -g n8n"
+    exit 1
 }
 
-function Test-CommandExists($command) {
-    return $null -ne (Get-Command $command -ErrorAction SilentlyContinue)
+# Set environment variables needed for your workflow
+$env:NODES_EXCLUDE = "[]"
+$env:N8N_HOST = "localhost"
+$env:N8N_PORT = "5678"
+$env:N8N_PROTOCOL = "http"
+
+# Optional: suppress settings permission warnings on Windows
+$env:N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS = "false"
+
+# Check if n8n is already running on port 5678
+$existing = netstat -ano | Select-String ":5678"
+if ($existing) {
+    Write-Host "n8n may already be running on port 5678." -ForegroundColor Yellow
+    Write-Host "If localhost does not work, stop the existing process first." -ForegroundColor Yellow
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$pidFile = Join-Path $repoRoot 'n8n\n8n.pid'
-$logDir = Join-Path $repoRoot 'logs'
-$workflowDir = Join-Path $repoRoot 'n8n'
-$env:N8N_USER_FOLDER = $workflowDir
-
-if (-not (Test-Path $logDir)) {
-    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-}
-if (-not (Test-Path $workflowDir)) {
-    New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
-}
-
-if (-not (Test-CommandExists 'n8n')) {
-    Write-Error 'n8n is not installed or not on PATH. Run .\scripts\setup.ps1 first.'
-}
-
-if (Test-Path $pidFile) {
-    $existingPid = Get-Content $pidFile -ErrorAction SilentlyContinue
-    if ($existingPid) {
-        $existingProcess = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-        if ($existingProcess) {
-            Write-Host "n8n appears to already be running (PID $existingPid)." -ForegroundColor Yellow
-            Start-Process 'http://localhost:5678' | Out-Null
-            exit 0
-        }
-        else {
-            Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-Write-Step "Starting local n8n"
-
+# Start n8n in a separate PowerShell window and keep that window open
 $command = @"
+Set-Location '$RepoRoot'
 `$env:NODES_EXCLUDE='[]'
 `$env:N8N_HOST='localhost'
 `$env:N8N_PORT='5678'
 `$env:N8N_PROTOCOL='http'
-`$env:N8N_USER_FOLDER='$workflowDir'
+`$env:N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS='false'
 n8n
 "@
 
-$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-$process = Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded `
-    -PassThru -WorkingDirectory $repoRoot
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $command | Out-Null
 
-Set-Content -Path $pidFile -Value $process.Id -Encoding ASCII
-Write-Host "Started n8n in a new window (PID $($process.Id))." -ForegroundColor Green
+Start-Sleep -Seconds 3
 
-Start-Sleep -Seconds 4
-Start-Process 'http://localhost:5678' | Out-Null
-
-Write-Host ''
-Write-Host 'n8n should now be available at: http://localhost:5678' -ForegroundColor Green
-Write-Host 'Keep the n8n PowerShell window open while automation is running.' -ForegroundColor Yellow
+Write-Host ""
+Write-Host "n8n start command launched." -ForegroundColor Green
+Write-Host "Open your browser manually and go to: http://localhost:5678" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Leave the n8n PowerShell window open while automation is running." -ForegroundColor Yellow

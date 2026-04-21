@@ -1,7 +1,4 @@
 @echo off
-echo Stopping n8n...
-
-taskkill /f /im node.exe
-
-echo n8n stopped
+echo Stopping QA Automation...
+powershell -ExecutionPolicy Bypass -File "%~dp0stop.ps1"
 pause
