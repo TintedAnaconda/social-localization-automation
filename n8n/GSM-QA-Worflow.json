@@ -1,0 +1,182 @@
+{
+  "name": "TEST-GSM-QA Worflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 2
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -496,
+        -32
+      ],
+      "id": "75f8a957-a797-400d-ac72-e3fb6e735241",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "186439e6-a936-47b0-a66d-025d4e16445d",
+              "leftValue": "={{$json.exitCode.toString()}}",
+              "rightValue": "0",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        496,
+        -48
+      ],
+      "id": "fa800939-572a-4926-962c-83ecb2796af7",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "command": "dir /b C:\\automation\\social-localization-automation\\input\\*.xlsx"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -192,
+        -32
+      ],
+      "id": "cb60c95b-1e17-4cbc-8515-6d32e7192cf2",
+      "name": "Check Input"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f612f5ee-0314-4ee8-891c-68df4dbe62c6",
+              "leftValue": "={{$json.stdout}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -16,
+        -32
+      ],
+      "id": "1c9a4c1d-62ed-4495-b966-d94787549cd3",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "command": "cd /d \"C:\\automation\\social-localization-automation\" && .\\.venv\\Scripts\\python.exe automation\\qa_engine.py 2>&1"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        320,
+        -48
+      ],
+      "id": "f9a4cd83-c673-46a4-8ac7-37878e7b1c74",
+      "name": "Execute QA"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        []
+      ]
+    },
+    "Check Input": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Execute QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute QA": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "c1586a45-e916-4fab-a083-95ac6aa52468",
+  "meta": {
+    "instanceId": "19ed50fa2a87fa462a77ee99309da735bbd1b276171bd26114c8d14845c28d8e"
+  },
+  "id": "JR0d9rtxQA2WXr6b",
+  "tags": []
+}
