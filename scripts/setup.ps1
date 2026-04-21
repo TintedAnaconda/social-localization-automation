@@ -1,8 +1,9 @@
 # scripts/setup.ps1
+# One-time setup for local Python + local n8n
 # Run from repo root:
-# powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
 function Write-Step($message) {
     Write-Host ""
@@ -10,43 +11,60 @@ function Write-Step($message) {
 }
 
 function Test-CommandExists($command) {
-    $null -ne (Get-Command $command -ErrorAction SilentlyContinue)
+    return $null -ne (Get-Command $command -ErrorAction SilentlyContinue)
 }
+
+function Get-PythonCommand {
+    if (Test-CommandExists 'py') { return 'py' }
+    if (Test-CommandExists 'python') { return 'python' }
+    throw 'Python is not installed or not on PATH. Please install Python 3.11+ first.'
+}
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+Set-Location $repoRoot
+
+Write-Step "Using repository folder"
+Write-Host $repoRoot -ForegroundColor Green
 
 Write-Step "Checking required tools"
 
-if (-not (Test-CommandExists "git")) {
-    Write-Error "Git is not installed or not on PATH. Please install Git first."
+if (-not (Test-CommandExists 'node')) {
+    Write-Error 'Node.js is not installed or not on PATH. Please install Node.js LTS first.'
 }
 
-if (-not (Test-CommandExists "python")) {
-    Write-Error "Python is not installed or not on PATH. Please install Python 3.11+ first."
+if (-not (Test-CommandExists 'npm')) {
+    Write-Error 'npm is not installed or not on PATH. Please install Node.js LTS first.'
 }
 
-if (-not (Test-CommandExists "docker")) {
-    Write-Error "Docker is not installed or not on PATH. Please install Docker Desktop first."
+$pythonCmd = Get-PythonCommand
+Write-Host "Python command found: $pythonCmd" -ForegroundColor Green
+Write-Host 'Node.js found.' -ForegroundColor Green
+Write-Host 'npm found.' -ForegroundColor Green
+
+if (Test-CommandExists 'git') {
+    Write-Host 'Git found.' -ForegroundColor Green
+}
+else {
+    Write-Host 'Git not found. This is OK if the repo was downloaded manually.' -ForegroundColor Yellow
 }
 
-Write-Host "Git found." -ForegroundColor Green
-Write-Host "Python found." -ForegroundColor Green
-Write-Host "Docker found." -ForegroundColor Green
-
-Write-Step "Creating standard folders"
+Write-Step "Creating required folders"
 
 $folders = @(
-    "input",
-    "output",
-    "logs",
-    "config",
-    "templates",
-    "n8n",
-    "n8n\workflows"
+    'input',
+    'input\processed',
+    'output',
+    'output\qa_reports',
+    'logs',
+    'config',
+    'templates'
 )
 
 foreach ($folder in $folders) {
-    if (-not (Test-Path $folder)) {
-        New-Item -ItemType Directory -Path $folder | Out-Null
-        Write-Host "Created $folder"
+    $fullPath = Join-Path $repoRoot $folder
+    if (-not (Test-Path $fullPath)) {
+        New-Item -ItemType Directory -Path $fullPath -Force | Out-Null
+        Write-Host "Created $folder" -ForegroundColor Green
     }
     else {
         Write-Host "Exists: $folder"
@@ -55,74 +73,85 @@ foreach ($folder in $folders) {
 
 Write-Step "Creating Python virtual environment"
 
-if (-not (Test-Path ".venv")) {
-    python -m venv .venv
-    Write-Host "Virtual environment created at .venv" -ForegroundColor Green
+$venvPath = Join-Path $repoRoot '.venv'
+$venvPython = Join-Path $venvPath 'Scripts\python.exe'
+
+if (-not (Test-Path $venvPython)) {
+    & $pythonCmd -m venv $venvPath
+    Write-Host 'Virtual environment created.' -ForegroundColor Green
 }
 else {
-    Write-Host ".venv already exists"
+    Write-Host '.venv already exists'
 }
 
-Write-Step "Activating virtual environment"
-
-$venvActivate = ".\.venv\Scripts\Activate.ps1"
-if (-not (Test-Path $venvActivate)) {
-    Write-Error "Could not find virtual environment activation script at $venvActivate"
+if (-not (Test-Path $venvPython)) {
+    Write-Error "Could not find virtual environment Python at $venvPython"
 }
 
-. $venvActivate
+Write-Step "Installing Python packages"
 
-Write-Step "Upgrading pip and installing Python packages"
+& $venvPython -m pip install --upgrade pip
 
-python -m pip install --upgrade pip
-
-if (Test-Path "requirements.txt") {
-    pip install -r requirements.txt
-    Write-Host "requirements.txt installed" -ForegroundColor Green
+$requirementsFile = Join-Path $repoRoot 'requirements.txt'
+if (Test-Path $requirementsFile) {
+    & $venvPython -m pip install -r $requirementsFile
+    Write-Host 'requirements.txt installed successfully.' -ForegroundColor Green
 }
 else {
-    Write-Host "requirements.txt not found yet. Skipping package install." -ForegroundColor Yellow
+    Write-Host 'requirements.txt not found. Skipping Python package install.' -ForegroundColor Yellow
 }
 
-Write-Step "Creating local .env from .env.example"
+Write-Step "Creating local .env file"
 
-if (-not (Test-Path ".env")) {
-    if (Test-Path ".env.example") {
-        Copy-Item ".env.example" ".env"
-        Write-Host "Created .env from .env.example" -ForegroundColor Green
+$envExample = Join-Path $repoRoot '.env.example'
+$envFile = Join-Path $repoRoot '.env'
+
+if (-not (Test-Path $envFile)) {
+    if (Test-Path $envExample) {
+        Copy-Item $envExample $envFile
+        Write-Host 'Created .env from .env.example' -ForegroundColor Green
     }
     else {
-        Write-Host ".env.example not found. Skipping .env creation." -ForegroundColor Yellow
+        Write-Host '.env.example not found. Skipping .env creation.' -ForegroundColor Yellow
     }
 }
 else {
-    Write-Host ".env already exists"
+    Write-Host '.env already exists'
 }
 
-Write-Step "Checking Docker Compose availability"
+Write-Step "Checking n8n installation"
 
-try {
-    docker compose version | Out-Null
-    Write-Host "Docker Compose is available." -ForegroundColor Green
-}
-catch {
-    Write-Error "Docker Compose is not available. Make sure Docker Desktop is installed and running."
-}
-
-Write-Step "Pulling n8n image"
-
-if (Test-Path "docker-compose.yml") {
-    docker compose pull
-    Write-Host "Docker images pulled successfully." -ForegroundColor Green
+if (Test-CommandExists 'n8n') {
+    Write-Host 'n8n is already installed.' -ForegroundColor Green
 }
 else {
-    Write-Host "docker-compose.yml not found yet. Skipping docker pull." -ForegroundColor Yellow
+    Write-Host 'n8n not found. Installing globally with npm...' -ForegroundColor Yellow
+    npm install -g n8n
+    if (-not (Test-CommandExists 'n8n')) {
+        Write-Error 'n8n install finished but the n8n command is still not available. Close this terminal, open a new PowerShell window, and run setup again.'
+    }
+    Write-Host 'n8n installed successfully.' -ForegroundColor Green
 }
 
-Write-Step "Setup complete"
+Write-Step "Writing local setup notes"
 
-Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "1. Open .env and add any required values."
-Write-Host "2. Start Docker Desktop if it is not already running."
-Write-Host "3. Run: .\scripts\start.ps1"
-Write-Host "4. Open n8n at http://localhost:5678"
+$notesPath = Join-Path $repoRoot 'LOCAL_SETUP_NOTES.txt'
+$notes = @"
+Local setup is complete.
+
+Next steps:
+1. Run .\scripts\start.ps1 to start local n8n.
+2. Open http://localhost:5678 if it does not open automatically.
+3. Import the shared workflow JSON into n8n if this is the first setup.
+4. In the Execute Command node, use the repo virtual environment Python:
+   cd /d "$repoRoot" && .\.venv\Scripts\python.exe automation\qa_engine.py 2>&1
+5. Drop Excel files into:
+   $repoRoot\input
+6. Find QA reports in:
+   $repoRoot\output\qa_reports
+"@
+Set-Content -Path $notesPath -Value $notes -Encoding UTF8
+Write-Host "Created LOCAL_SETUP_NOTES.txt" -ForegroundColor Green
+
+Write-Step "Setup complete"
+Write-Host 'Run .\scripts\start.ps1 to launch local n8n.' -ForegroundColor Cyan
