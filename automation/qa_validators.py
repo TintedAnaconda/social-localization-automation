@@ -430,8 +430,6 @@ def validate_autofill_logic(df: pd.DataFrame, autofill_df: pd.DataFrame) -> list
         if not is_blank(value)
     }
 
-    # TEMP DEBUG
-    print("SAMPLE VALID AUTOFILL VALUES:", list(sorted(valid_autofill_values))[:20])
 
     for _, row in df.iterrows():
         row_number = row.get("Source Row Number")
@@ -439,9 +437,6 @@ def validate_autofill_logic(df: pd.DataFrame, autofill_df: pd.DataFrame) -> list
 
         if not raw_value:
             continue
-
-        # TEMP DEBUG
-        print("RAW INPUT VALUE:", repr(raw_value))
 
         split_values = [part.strip() for part in raw_value.splitlines() if part.strip()]
         if not split_values:
@@ -463,8 +458,6 @@ def validate_autofill_logic(df: pd.DataFrame, autofill_df: pd.DataFrame) -> list
         autofill_value = split_values[0]
         normalized_autofill_value = normalize_autofill_value(autofill_value)
 
-        # TEMP DEBUG
-        print("NORMALIZED INPUT VALUE:", repr(normalized_autofill_value))
 
         if normalized_autofill_value not in valid_autofill_values:
             issues.append(

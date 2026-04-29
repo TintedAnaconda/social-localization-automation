@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -34,9 +36,16 @@ OUTPUT_DIR = REPO_ROOT / "output" / "qa_reports"
 LOGS_DIR = REPO_ROOT / "logs"
 
 GLOBAL_AUTOFILL_PATH = CONFIG_DIR / "Global Autofill Rule.xlsx"
+if not GLOBAL_AUTOFILL_PATH.exists():
+    raise FileNotFoundError(
+        f"Missing required config file: {GLOBAL_AUTOFILL_PATH}"
+    )
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+EMAIL_TEMPLATE_DIR = REPO_ROOT / "output" / "localization_email_templates"
+EMAIL_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 
 LOG_FILE = LOGS_DIR / "qa_engine.log"
 
@@ -51,14 +60,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def choose_latest_input_file(input_dir: Path) -> Path:
+def choose_latest_input_file(input_dir: Path) -> Optional[Path]:
     excel_files = sorted(
-        [p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in {".xlsx", ".xls"}],
+        [
+            p for p in input_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in {".xlsx", ".xls"}
+        ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
+
     if not excel_files:
-        raise FileNotFoundError(f"No Excel files found in {input_dir}")
+        logger.warning(f"No Excel files found in {input_dir}")
+        return None
+
     return excel_files[0]
 
 
@@ -70,7 +85,11 @@ def load_input_excel(path: Path) -> pd.DataFrame:
 
 
 def load_autofill_values_from_row1(path: Path) -> pd.DataFrame:
-    logger.info("Loading Global Autofill source (row 1 values from all sheets, skipping column A): %s", path)
+    logger.info(
+        "Loading Global Autofill source "
+        "(row 1 values from all sheets, skipping column A): %s",
+        path,
+    )
 
     dfs: list[pd.DataFrame] = []
     xl = pd.ExcelFile(path)
@@ -81,10 +100,7 @@ def load_autofill_values_from_row1(path: Path) -> pd.DataFrame:
         if raw_df.empty:
             continue
 
-        # Row 1 in Excel = iloc[0]
         row1_values = raw_df.iloc[0].tolist()
-
-        # Ignore column A (index 0). Keep B onward only.
         candidate_values = row1_values[1:]
 
         cleaned_values = [
@@ -94,30 +110,46 @@ def load_autofill_values_from_row1(path: Path) -> pd.DataFrame:
         ]
 
         if not cleaned_values:
-            logger.info("Skipping sheet (no Autofill values found in row 1 after column A): %s", sheet)
+            logger.info(
+                "Skipping sheet (no Autofill values found in row 1 after column A): %s",
+                sheet,
+            )
             continue
 
-        logger.info("Sheet '%s' loaded %s Autofill value(s) from row 1", sheet, len(cleaned_values))
+        logger.info(
+            "Sheet '%s' loaded %s Autofill value(s) from row 1",
+            sheet,
+            len(cleaned_values),
+        )
 
-        sheet_df = pd.DataFrame({
-            "Global Autofill Value": cleaned_values,
-            "__source_sheet": sheet,
-        })
+        sheet_df = pd.DataFrame(
+            {
+                "Global Autofill Value": cleaned_values,
+                "__source_sheet": sheet,
+            }
+        )
         dfs.append(sheet_df)
 
     if not dfs:
         raise ValueError(
-            "No valid Autofill values found in row 1 (columns B onward) of Global Autofill Rule.xlsx"
+            "No valid Autofill values found in row 1 "
+            "(columns B onward) of Global Autofill Rule.xlsx"
         )
 
     combined_df = pd.concat(dfs, ignore_index=True)
-    logger.info("Loaded %s sheet(s) with %s total Autofill values", len(dfs), len(combined_df))
+    logger.info(
+        "Loaded %s sheet(s) with %s total Autofill values",
+        len(dfs),
+        len(combined_df),
+    )
+
     return combined_df
 
 
 def has_blocking_header_issues(issues: list[Issue]) -> bool:
     return any(
-        issue.severity == "BLOCKER" and issue.rule in {"Missing Header", "Header Mismatch"}
+        issue.severity == "BLOCKER"
+        and issue.rule in {"Missing Header", "Header Mismatch"}
         for issue in issues
     )
 
@@ -128,24 +160,41 @@ def build_summary_df(
     skipped_rows: int,
     issues_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    blocker_count = int((issues_df["severity"] == "BLOCKER").sum()) if not issues_df.empty else 0
-    warning_count = int((issues_df["severity"] == "WARNING").sum()) if not issues_df.empty else 0
+    blocker_count = (
+        int((issues_df["severity"] == "BLOCKER").sum())
+        if not issues_df.empty
+        else 0
+    )
+    warning_count = (
+        int((issues_df["severity"] == "WARNING").sum())
+        if not issues_df.empty
+        else 0
+    )
 
-    status = "FAIL" if blocker_count > 0 else "PASS WITH WARNINGS" if warning_count > 0 else "PASS"
+    status = (
+        "FAIL"
+        if blocker_count > 0
+        else "PASS WITH WARNINGS"
+        if warning_count > 0
+        else "PASS"
+    )
 
-    return pd.DataFrame([
-        {"Metric": "Input Rows", "Value": input_rows},
-        {"Metric": "QA Rows", "Value": qa_rows},
-        {"Metric": "Skipped Rows Without Message Name", "Value": skipped_rows},
-        {"Metric": "Total Issues", "Value": len(issues_df)},
-        {"Metric": "Blockers", "Value": blocker_count},
-        {"Metric": "Warnings", "Value": warning_count},
-        {"Metric": "Status", "Value": status},
-    ])
+    return pd.DataFrame(
+        [
+            {"Metric": "Input Rows", "Value": input_rows},
+            {"Metric": "QA Rows", "Value": qa_rows},
+            {"Metric": "Skipped Rows Without Message Name", "Value": skipped_rows},
+            {"Metric": "Total Issues", "Value": len(issues_df)},
+            {"Metric": "Blockers", "Value": blocker_count},
+            {"Metric": "Warnings", "Value": warning_count},
+            {"Metric": "Status", "Value": status},
+        ]
+    )
 
 
 def autosize_worksheet(writer, sheet_name: str, df: pd.DataFrame) -> None:
     ws = writer.sheets[sheet_name]
+
     for idx, col in enumerate(df.columns, start=1):
         values = df[col].astype(str).fillna("").tolist() if not df.empty else []
         max_len = max([len(str(col))] + [len(v) for v in values])
@@ -171,22 +220,67 @@ def write_qa_report(
         autosize_worksheet(writer, "Cleaned Input", cleaned_input_df)
 
     logger.info("QA report written: %s", output_file)
+
     return output_file
 
 
-def run_qa(input_file: Optional[Path] = None) -> Path:
+def write_qa_summary(
+    report_path: Path,
+    issues_df: pd.DataFrame,
+    input_file: Path,
+) -> Path:
+    if issues_df.empty:
+        blocker_count = 0
+        warning_count = 0
+    else:
+        blocker_count = int((issues_df["severity"] == "BLOCKER").sum())
+        warning_count = int((issues_df["severity"] == "WARNING").sum())
+
+    if blocker_count > 0:
+        status = "BLOCKED"
+    elif warning_count > 0:
+        status = "PASS_WITH_WARNINGS"
+    else:
+        status = "PASS"
+
+    summary = {
+        "status": status,
+        "blocker_count": blocker_count,
+        "warning_count": warning_count,
+        "qa_report_path": str(report_path),
+        "input_file_path": str(input_file),
+        "input_file_name": input_file.name,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    summary_path = report_path.parent / "qa_summary.json"
+
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    logger.info("QA summary written: %s", summary_path)
+
+    print(f"QA_SUMMARY_PATH={summary_path}")
+    print(f"QA_STATUS={status}")
+    print(f"BLOCKER_COUNT={blocker_count}")
+    print(f"WARNING_COUNT={warning_count}")
+
+    return summary_path
+
+
+def run_qa(input_file: Optional[Path] = None) -> Optional[Path]:
     if input_file is None:
         input_file = choose_latest_input_file(INPUT_DIR)
 
-    if not input_file.exists():
-        raise FileNotFoundError(f"Input file not found: {input_file}")
+    if input_file is None:
+        logger.info("No input file found. Skipping QA run.")
+        return None
 
-    # Load input file
     input_df = load_input_excel(input_file)
     original_input_rows = len(input_df)
 
-    # Strict header validation on raw input file
     header_issues = validate_required_headers(input_df)
+
     if has_blocking_header_issues(header_issues):
         issues_df = pd.DataFrame([issue.to_dict() for issue in header_issues])
 
@@ -197,19 +291,28 @@ def run_qa(input_file: Optional[Path] = None) -> Path:
             issues_df=issues_df,
         )
 
-        return write_qa_report(summary_df, issues_df, input_df, input_file)
+        report_path = write_qa_report(summary_df, issues_df, input_df, input_file)
+        write_qa_summary(report_path, issues_df, input_file)
 
-    # Load Autofill values from Global Autofill Rule workbook
+        blocker_count = int((issues_df["severity"] == "BLOCKER").sum())
+        warning_count = int((issues_df["severity"] == "WARNING").sum())
+
+        logger.info(
+            "QA complete with blocking header issues | blockers=%s | warnings=%s",
+            blocker_count,
+            warning_count,
+        )
+
+        return report_path
+
     autofill_df = load_autofill_values_from_row1(GLOBAL_AUTOFILL_PATH)
 
-    # Clean and scope rows for QA
     working_df = clean_object_columns(input_df)
     working_df = filter_rows_with_message_name(working_df)
 
     qa_rows = len(working_df)
     skipped_rows = original_input_rows - qa_rows
 
-    # Run validations
     issues: list[Issue] = []
     issues.extend(validate_required_values(working_df))
     issues.extend(validate_fixed_values(working_df))
@@ -221,24 +324,24 @@ def run_qa(input_file: Optional[Path] = None) -> Path:
     issues.extend(validate_media_rules(working_df))
     issues.extend(validate_autofill_logic(working_df, autofill_df))
 
-    # Language checks
     tool = build_language_tool()
     issues.extend(validate_language_quality(working_df, tool))
 
-    # Build issues dataframe
     issues_df = pd.DataFrame([issue.to_dict() for issue in issues])
-    if issues_df.empty:
-        issues_df = pd.DataFrame(columns=[
-            "row_number",
-            "column",
-            "severity",
-            "rule",
-            "message",
-            "actual_value",
-            "expected_value",
-        ])
 
-    # Build summary
+    if issues_df.empty:
+        issues_df = pd.DataFrame(
+            columns=[
+                "row_number",
+                "column",
+                "severity",
+                "rule",
+                "message",
+                "actual_value",
+                "expected_value",
+            ]
+        )
+
     summary_df = build_summary_df(
         input_rows=original_input_rows,
         qa_rows=qa_rows,
@@ -246,15 +349,32 @@ def run_qa(input_file: Optional[Path] = None) -> Path:
         issues_df=issues_df,
     )
 
-    # Write report
     report_path = write_qa_report(summary_df, issues_df, working_df, input_file)
+    write_qa_summary(report_path, issues_df, input_file)
 
-    blocker_count = int((issues_df["severity"] == "BLOCKER").sum()) if not issues_df.empty else 0
-    warning_count = int((issues_df["severity"] == "WARNING").sum()) if not issues_df.empty else 0
-    logger.info("QA complete | blockers=%s | warnings=%s", blocker_count, warning_count)
+    blocker_count = (
+        int((issues_df["severity"] == "BLOCKER").sum())
+        if not issues_df.empty
+        else 0
+    )
+    warning_count = (
+        int((issues_df["severity"] == "WARNING").sum())
+        if not issues_df.empty
+        else 0
+    )
+
+    logger.info(
+        "QA complete | blockers=%s | warnings=%s",
+        blocker_count,
+        warning_count,
+    )
 
     return report_path
 
+
 if __name__ == "__main__":
     report = run_qa()
-    print(f"QA report created: {report}")
+    if report is not None:
+        print(f"QA report created: {report}")
+    else:
+        print("No input file found. QA was skipped.")

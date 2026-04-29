@@ -1,0 +1,318 @@
+{
+  "name": "TEST-GSM-QA Worflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 2
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -560,
+        -48
+      ],
+      "id": "75f8a957-a797-400d-ac72-e3fb6e735241",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "186439e6-a936-47b0-a66d-025d4e16445d",
+              "leftValue": "={{$json.exitCode.toString()}}",
+              "rightValue": "0",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -32,
+        -208
+      ],
+      "id": "fa800939-572a-4926-962c-83ecb2796af7",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "command": "dir /b C:\\automation\\social-localization-automation\\input\\*.xlsx"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -48
+      ],
+      "id": "cb60c95b-1e17-4cbc-8515-6d32e7192cf2",
+      "name": "Check Input"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f612f5ee-0314-4ee8-891c-68df4dbe62c6",
+              "leftValue": "={{$json.stdout}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -272,
+        -48
+      ],
+      "id": "1c9a4c1d-62ed-4495-b966-d94787549cd3",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root='C:\\automation\\social-localization-automation'; Set-Location $root; Write-Output ('PWD=' + (Get-Location)); Write-Output '--- INPUT FILES ---'; Get-ChildItem -Path (Join-Path $root 'input') -Filter '*.xlsx' | Select-Object Name, FullName, LastWriteTime; Write-Output '--- RUNNING QA ---'; py .\\automation\\qa_engine.py; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Write-Output '--- QA SUMMARY SEARCH ---'; Get-ChildItem -Path $root -Recurse -Filter 'qa_summary.json' | Select-Object -ExpandProperty FullName\""
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -208
+      ],
+      "id": "f9a4cd83-c673-46a4-8ac7-37878e7b1c74",
+      "name": "Execute QA"
+    },
+    {
+      "parameters": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-Content -Raw 'C:\\automation\\social-localization-automation\\output\\qa_reports\\qa_summary.json'\""
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        80,
+        -320
+      ],
+      "id": "96b0983d-aa6d-43a8-a641-3fc7d9740f88",
+      "name": "Read QA Summary"
+    },
+    {
+      "parameters": {
+        "jsCode": "const summary = JSON.parse($json.stdout);\nreturn [{ json: summary }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        -320
+      ],
+      "id": "75794def-03ae-4b31-a153-6e84f6dcbe17",
+      "name": "Parse QA Summary"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fc623421-664d-44a9-ba37-b27f754b3ae1",
+              "leftValue": "={{$json.blocker_count.toString()}}",
+              "rightValue": "0",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        352,
+        -320
+      ],
+      "id": "1e08e70f-23ec-4a9a-9edf-9c5c5e89cd76",
+      "name": "If2"
+    },
+    {
+      "parameters": {
+        "jsCode": "function utf8ToBase64(str) {\n  const bytes = new TextEncoder().encode(str);\n  let binary = '';\n  for (const b of bytes) binary += String.fromCharCode(b);\n  return btoa(binary);\n}\n\nfunction utf16leToBase64(str) {\n  const bytes = [];\n  for (let i = 0; i < str.length; i++) {\n    const code = str.charCodeAt(i);\n    bytes.push(code & 0xff, code >> 8);\n  }\n  let binary = '';\n  for (const b of bytes) binary += String.fromCharCode(b);\n  return btoa(binary);\n}\n\nconst summary = $json;\n\nconst root = 'C:\\\\automation\\\\social-localization-automation';\nconst outputDir = `${root}\\\\output\\\\localization_email_templates`;\n\nconst inputFileName = summary.input_file_name || 'unknown_input.xlsx';\nconst baseName = inputFileName.replace(/\\.xlsx$/i, '');\nconst safeBaseName = baseName.replace(/[<>:\"/\\\\|?*]/g, '_');\n\nconst stamp = new Date().toISOString()\n  .replace(/[-:]/g, '')\n  .replace(/\\..+/, '')\n  .replace('T', '_');\n\nconst outputFilePath = `${outputDir}\\\\${safeBaseName}_localization_handoff_${stamp}.txt`;\n\nconst body = [\n  'Subject: Localization handoff ready',\n  '',\n  'Hi Localization team,',\n  '',\n  'The QA review is complete and this file is ready for localization handoff.',\n  '',\n  `Input file: ${inputFileName}`,\n  `QA status: ${summary.status}`,\n  `Blockers: ${summary.blocker_count}`,\n  `Warnings: ${summary.warning_count}`,\n  '',\n  'Warnings may be present, but no blockers were found.',\n  '',\n  'Thanks,'\n].join('\\r\\n');\n\nconst bodyBase64 = utf8ToBase64(body);\n\nconst psScript = `\n$dir = '${outputDir}'\n$file = '${outputFilePath}'\n$encoded = '${bodyBase64}'\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\n$body = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encoded))\nSet-Content -Path $file -Value $body -Encoding UTF8\nWrite-Output ('Created email template: ' + $file)\n`;\n\nreturn [{\n  json: {\n    ...summary,\n    output_dir: outputDir,\n    output_file_path: outputFilePath,\n    ps_encoded_command: utf16leToBase64(psScript)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        -416
+      ],
+      "id": "db45f914-3619-4f8d-81d6-d497691fca54",
+      "name": "Build Localization Email Template"
+    },
+    {
+      "parameters": {
+        "command": "=powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {{$json.ps_encoded_command}}"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        768,
+        -416
+      ],
+      "id": "fae1a674-1e3b-430e-a0fd-1591ffdec293",
+      "name": "Write Email Template"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Read QA Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Input": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Execute QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute QA": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read QA Summary": {
+      "main": [
+        [
+          {
+            "node": "Parse QA Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse QA Summary": {
+      "main": [
+        [
+          {
+            "node": "If2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If2": {
+      "main": [
+        [
+          {
+            "node": "Build Localization Email Template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Localization Email Template": {
+      "main": [
+        [
+          {
+            "node": "Write Email Template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "125723dd-2f83-45c7-873c-ffe74f1e02c6",
+  "meta": {
+    "instanceId": "19ed50fa2a87fa462a77ee99309da735bbd1b276171bd26114c8d14845c28d8e"
+  },
+  "id": "JR0d9rtxQA2WXr6b",
+  "tags": []
+}
